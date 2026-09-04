@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- App -->
+    <string name="app_name">APV Editor</string>
+    <string name="tab_untitled">Untitled</string>
+
+    <!-- Menu: File -->
+    <string name="menu_file">File</string>
+    <string name="menu_file_new">New</string>
+    <string name="menu_file_open">Open…</string>
+    <string name="menu_file_save">Save</string>
+    <string name="menu_file_save_as">Save As…</string>
+    <string name="menu_file_close_tab">Close Tab</string>
+
+    <!-- Menu: Edit -->
+    <string name="menu_edit">Edit</string>
+    <string name="menu_edit_undo">Undo</string>
+    <string name="menu_edit_redo">Redo</string>
+
+    <!-- Menu: View -->
+    <string name="menu_view">View</string>
+    <string name="menu_view_increase_font">Increase Font</string>
+    <string name="menu_view_decrease_font">Decrease Font</string>
+    <string name="menu_view_markdown_preview">Markdown Preview</string>
+    <string name="menu_view_layout">Layout</string>
+    <string name="menu_view_syntax">Syntax</string>
+
+    <!-- Layout names -->
+    <string name="layout_single">Single</string>
+    <string name="layout_columns2">Columns: 2</string>
+    <string name="layout_rows2">Rows: 2</string>
+    <string name="layout_grid4">Grid: 4</string>
+
+    <!-- Status messages -->
+    <string name="status_ready">Ready</string>
+    <string name="status_undo">Undo</string>
+    <string name="status_redo">Redo</string>
+    <string name="status_saved">Saved %1$s</string>
+    <string name="status_autosaved">Auto-saved %1$s</string>
+    <string name="status_opened">Opened %1$s</string>
+    <string name="status_switched">Switched to %1$s</string>
+    <string name="status_layout">Layout: %1$s</string>
+    <string name="status_syntax">Syntax: %1$s</string>
+    <string name="status_markdown_preview_enabled">Markdown preview enabled</string>
+    <string name="status_markdown_preview_disabled">Markdown preview disabled</string>
+    <string name="status_missing_file">Missing file: %1$s — recovered unsaved buffer</string>
+    <string name="status_external_change">%1$s changed externally — discarded unsaved buffer</string>
+
+    <!-- File dialogs (AWT titles) -->
+    <string name="dialog_open_file">Open File</string>
+    <string name="dialog_save_as">Save As</string>
+
+    <!-- Unsaved changes dialog -->
+    <string name="unsaved_title">Unsaved changes</string>
+    <string name="unsaved_text">Save changes to %1$s before closing?</string>
+    <string name="unsaved_this_tab">this tab</string>
+    <string name="unsaved_btn_save">Save</string>
+    <string name="unsaved_btn_dont_save">Don't Save</string>
+    <string name="unsaved_btn_cancel">Cancel</string>
+
+    <!-- Layout merge dialog -->
+    <string name="layout_merge_text">Switching to %1$s merges tabs into the first pane. %2$d file(s) have unsaved changes: %3$s.</string>
+    <string name="layout_merge_btn_save_all">Save All &amp; Merge</string>
+    <string name="layout_merge_btn_merge_anyway">Merge Anyway</string>
+
+    <!-- Empty pane placeholder -->
+    <string name="pane_empty">Empty pane</string>
+    <string name="pane_new_file">New File</string>
+    <string name="pane_open_file">Open File…</string>
+
+    <!-- Tab bar -->
+    <string name="tab_close">Close</string>
+
+    <!-- Oversized file dialog -->
+    <string name="oversized_title">File too large to open</string>
+    <string name="oversized_text">%1$s has too many lines for APV Editor\'s text renderer to display safely and can\'t be opened. Try a different editor for very large files.</string>
+    <string name="oversized_btn_ok">OK</string>
+
+</resources>

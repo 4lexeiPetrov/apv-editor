@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gradle --version)",
+      "Bash(brew install *)",
+      "WebFetch(domain:github.com)",
+      "Bash(./gradlew :composeApp:compileKotlinDesktop)"
+    ]
+  }
+}
