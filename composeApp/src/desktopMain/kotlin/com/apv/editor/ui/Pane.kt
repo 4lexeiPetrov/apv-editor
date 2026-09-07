@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -41,6 +43,7 @@ import com.apv.editor.state.EditorState
 import com.apv.editor.state.PaneLayout
 import com.apv.editor.state.PaneState
 import com.apv.editor.syntax.SyntaxLanguage
+import kotlinx.coroutines.flow.debounce
 import org.jetbrains.compose.resources.stringResource
 import java.awt.datatransfer.DataFlavor
 import java.io.File
@@ -217,7 +220,9 @@ private fun Pane(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val tab = pane.currentTab
             if (tab != null) {
-                if (tab.language == SyntaxLanguage.MARKDOWN && tab.showPreview) {
+                if (tab.isLargeFile) {
+                    LargeEditorPane(tab, pane, state)
+                } else if (tab.language == SyntaxLanguage.MARKDOWN && tab.showPreview) {
                     Row(modifier = Modifier.fillMaxSize()) {
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             EditorPane(tab, pane, state)
@@ -229,7 +234,17 @@ private fun Pane(
                                 .background(EditorTheme.Border),
                         )
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                            MarkdownPreview(tab.textField.text, state.fontSize)
+                            // Reparsing the whole Markdown AST on every keystroke stalls typing on
+                            // longer docs. The editor pane above still updates instantly; only the
+                            // rendered preview lags ~200ms behind the last keystroke instead of
+                            // re-parsing per character.
+                            var previewContent by remember(tab.id) { mutableStateOf(tab.textField.text) }
+                            LaunchedEffect(tab.id) {
+                                snapshotFlow { tab.textField.text }
+                                    .debounce(200)
+                                    .collect { previewContent = it }
+                            }
+                            MarkdownPreview(previewContent, state.fontSize)
                         }
                     }
                 } else {

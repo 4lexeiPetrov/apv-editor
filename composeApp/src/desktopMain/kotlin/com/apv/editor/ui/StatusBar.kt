@@ -18,7 +18,9 @@ import com.apv.editor.state.EditorState
 @Composable
 internal fun StatusBar(state: EditorState) {
     val tab = state.currentTab
-    val caretInfo = if (tab != null) {
+    val caretInfo = if (tab != null && tab.isLargeFile) {
+        "Ln ${tab.largeCaret.line + 1}, Col ${tab.largeCaret.col + 1}"
+    } else if (tab != null) {
         val cursor = tab.textField.selection.start.coerceAtMost(tab.textField.text.length)
         val before = tab.textField.text.substring(0, cursor)
         val line = before.count { it == '\n' } + 1

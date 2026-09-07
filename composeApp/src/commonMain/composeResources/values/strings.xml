@@ -25,12 +25,18 @@
     <string name="menu_view_markdown_preview">Markdown Preview</string>
     <string name="menu_view_layout">Layout</string>
     <string name="menu_view_syntax">Syntax</string>
+    <string name="menu_view_autosave">Autosave</string>
 
     <!-- Layout names -->
     <string name="layout_single">Single</string>
     <string name="layout_columns2">Columns: 2</string>
     <string name="layout_rows2">Rows: 2</string>
     <string name="layout_grid4">Grid: 4</string>
+
+    <string name="autosave_off">Off</string>
+    <string name="autosave_after_delay">After Delay</string>
+    <string name="autosave_on_focus_change">On Focus Change</string>
+    <string name="autosave_on_window_change">On Window Change</string>
 
     <!-- Status messages -->
     <string name="status_ready">Ready</string>

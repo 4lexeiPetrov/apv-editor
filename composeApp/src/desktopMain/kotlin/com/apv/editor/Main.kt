@@ -16,6 +16,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.apv.editor.platform.AutosaveMode
 import com.apv.editor.platform.FileDialogs
 import com.apv.editor.platform.FileOpenEvents
 import com.apv.editor.session.SessionStore
@@ -27,10 +28,14 @@ import com.apv.editor.state.buildRestoredSession
 import com.apv.editor.syntax.SyntaxLanguage
 import com.apv.editor.ui.App
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
 import org.jetbrains.skia.Image
 import java.awt.Frame
+import java.awt.event.WindowEvent
+import java.awt.event.WindowFocusListener
+import kotlin.time.Duration
 
 fun main(args: Array<String>) {
     FileOpenEvents.install(args)
@@ -101,9 +106,21 @@ fun main(args: Array<String>) {
                         }
                     }
                 }
-            }.collect {
-                sessionStore.schedule { state.toWrite(snapshotOfWindow(windowState)) }
             }
+                // snapshotFlow re-runs the block above (and rebuilds this list) on every write
+                // to any state it reads — including pure cursor/selection moves, since each tab's
+                // TextFieldValue bundles selection with text as one Compose State. That rebuild
+                // itself isn't what this debounce avoids (Compose's snapshot system requires it to
+                // detect a change in the first place); what it avoids is calling sessionStore
+                // .schedule(...) — and its ScheduledFuture submit/cancel churn on the background
+                // scheduler — on every single one of those emissions instead of once per pause.
+                // The disk write itself is already separately debounced 800ms inside SessionStore.
+                // onCloseRequest / the allPanesEmpty exit path flush synchronously outside this
+                // flow, so final state on quit is unaffected.
+                .debounce(250)
+                .collect {
+                    sessionStore.schedule { state.toWrite(snapshotOfWindow(windowState)) }
+                }
         }
 
         val appIcon = remember {
@@ -123,6 +140,11 @@ fun main(args: Array<String>) {
 
         Window(
             onCloseRequest = {
+                // Small-file tabs' unsaved edits survive quit via the draft snapshot the line
+                // below captures. Large-file tabs don't get a draft (see EditorState.tabToSnapshot)
+                // — the file on disk *is* their buffer — so anything dirty needs an actual save
+                // here instead, rather than trusting the debounced autosave to have already fired.
+                flushDirtyLargeTabs(state)
                 sessionStore.schedule { state.toWrite(snapshotOfWindow(windowState)) }
                 sessionStore.flush()
                 exitApplication()
@@ -132,6 +154,20 @@ fun main(args: Array<String>) {
             icon = appIcon,
         ) {
             val parent: Frame? = window
+
+            // AutosaveMode.OnWindowChange: save every dirty tab when the app is backgrounded
+            // (Alt/Cmd-Tab away, click another app) — distinct from AutosaveMode.OnFocusChange,
+            // which is per-tab and driven by EditorPane/LargeEditorPane's own composable lifecycle.
+            DisposableEffect(window, state) {
+                val listener = object : WindowFocusListener {
+                    override fun windowGainedFocus(e: WindowEvent) {}
+                    override fun windowLostFocus(e: WindowEvent) {
+                        state.autosaveAllOnWindowFocusLost()
+                    }
+                }
+                window.addWindowFocusListener(listener)
+                onDispose { window.removeWindowFocusListener(listener) }
+            }
 
             MenuBar {
                 Menu(stringResource(Res.string.menu_file), mnemonic = 'F') {
@@ -222,6 +258,29 @@ fun main(args: Array<String>) {
                             )
                         }
                     }
+                    Separator()
+                    Menu(stringResource(Res.string.menu_view_autosave), mnemonic = 'A') {
+                        RadioButtonItem(
+                            text = stringResource(Res.string.autosave_off),
+                            selected = state.autosaveMode == AutosaveMode.Off,
+                            onClick = { state.autosaveMode = AutosaveMode.Off },
+                        )
+                        RadioButtonItem(
+                            text = stringResource(Res.string.autosave_after_delay),
+                            selected = state.autosaveMode is AutosaveMode.AfterDelay,
+                            onClick = { state.autosaveMode = AutosaveMode.AfterDelay(1500) },
+                        )
+                        RadioButtonItem(
+                            text = stringResource(Res.string.autosave_on_focus_change),
+                            selected = state.autosaveMode == AutosaveMode.OnFocusChange,
+                            onClick = { state.autosaveMode = AutosaveMode.OnFocusChange },
+                        )
+                        RadioButtonItem(
+                            text = stringResource(Res.string.autosave_on_window_change),
+                            selected = state.autosaveMode == AutosaveMode.OnWindowChange,
+                            onClick = { state.autosaveMode = AutosaveMode.OnWindowChange },
+                        )
+                    }
                 }
             }
 
@@ -232,6 +291,16 @@ fun main(args: Array<String>) {
                     FileDialogs.openFiles(parent, strOpenTitle).forEach { file -> state.openFile(pane, file) }
                 },
             )
+        }
+    }
+}
+
+private fun flushDirtyLargeTabs(state: EditorState) {
+    for (pane in state.panes) {
+        for (tab in pane.tabs) {
+            if (tab.isLargeFile && tab.isModified) {
+                try { tab.save() } catch (_: Throwable) { /* best-effort; app is exiting either way */ }
+            }
         }
     }
 }

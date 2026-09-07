@@ -30,6 +30,16 @@ kotlin {
                 implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.27.0")
             }
         }
+        val commonTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+        val desktopTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 
     jvmToolchain(21)
@@ -47,7 +57,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi)
             packageName = "APV Editor"
-            packageVersion = "1.0.0"
+            packageVersion = "1.5.3"
             description = "APV Text Editor"
             vendor = "APV"
 

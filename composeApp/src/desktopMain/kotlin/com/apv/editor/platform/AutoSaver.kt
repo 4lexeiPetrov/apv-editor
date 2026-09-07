@@ -5,7 +5,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-class AutoSaver(private val delayMs: Long = 1500) {
+/**
+ * Debounced, per-key delayed-action scheduler backing [AutosaveMode.AfterDelay]. The delay is
+ * passed per call (from that mode's own `delayMs`) rather than fixed at construction, so changing
+ * [com.apv.editor.state.EditorState.autosaveMode]'s delay at runtime doesn't need a new scheduler.
+ */
+class AutoSaver {
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "autosave-thread").also { it.isDaemon = true }
@@ -18,7 +23,7 @@ class AutoSaver(private val delayMs: Long = 1500) {
      * pending action; schedules for different keys are independent, so concurrent
      * edits in multiple panes/tabs do not interfere with one another.
      */
-    fun schedule(key: Long, action: () -> Unit) {
+    fun schedule(key: Long, delayMs: Long, action: () -> Unit) {
         pending.remove(key)?.cancel(false)
         val future = scheduler.schedule(
             {
@@ -32,6 +37,11 @@ class AutoSaver(private val delayMs: Long = 1500) {
             TimeUnit.MILLISECONDS,
         )
         pending[key] = future
+    }
+
+    /** Cancels [key]'s pending delayed autosave, if any, without running it. */
+    fun cancel(key: Long) {
+        pending.remove(key)?.cancel(false)
     }
 
     fun shutdown() {

@@ -23,6 +23,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** Largest index in this sorted (ascending) list whose value is <= [target], or -1 if none. */
+private fun floorIndex(sorted: List<Int>, target: Int): Int {
+    val r = sorted.binarySearch(target)
+    return if (r >= 0) r else (-r - 2)
+}
+
 @Composable
 internal fun LineGutter(
     text: String,
@@ -47,6 +53,8 @@ internal fun LineGutter(
     val contentWidth = with(density) { measuredWidthPx.toDp() }
     val totalWidth = contentWidth + 24.dp
 
+    // Sorted ascending by construction (one entry per '\n'), which is what lets the render loop
+    // below find the visible slice with a binary search instead of a linear scan.
     val lineStartOffsets = remember(text) {
         val list = mutableListOf(0)
         for (i in text.indices) {
@@ -66,9 +74,33 @@ internal fun LineGutter(
             .padding(start = 8.dp, top = 6.dp, end = 12.dp, bottom = 6.dp),
     ) {
         Box(modifier = Modifier.fillMaxWidth().height(contentHeightDp)) {
-            if (layoutResult != null) {
+            if (layoutResult != null && layoutResult.lineCount > 0) {
                 val textLen = layoutResult.layoutInput.text.length
-                lineStartOffsets.forEachIndexed { idx, startOffset ->
+                val visualLineCount = layoutResult.lineCount
+
+                // Only the lines actually on screen (plus a comfortable overscan buffer, so a fast
+                // scroll or a fling doesn't show a blank gutter for a frame) need a Text composable
+                // here — previously every logical line in the whole document got one unconditionally,
+                // which made gutter rendering O(document size) per recomposition instead of O(viewport
+                // size). scrollState and layoutResult are the same ones the main text field already
+                // computes, shared via EditorPane, so no extra measurement work is introduced.
+                val overscanLines = 30
+                val viewTop = scrollState.value.toFloat()
+                val viewBottom = (scrollState.value + scrollState.viewportSize).toFloat()
+                val firstVisualLine = (layoutResult.getLineForVerticalPosition(viewTop) - overscanLines)
+                    .coerceIn(0, visualLineCount - 1)
+                val lastVisualLine = (layoutResult.getLineForVerticalPosition(viewBottom) + overscanLines)
+                    .coerceIn(0, visualLineCount - 1)
+                val startChar = layoutResult.getLineStart(firstVisualLine)
+                val endChar = layoutResult.getLineEnd(lastVisualLine).coerceAtMost(textLen)
+
+                // lineStartOffsets is sorted, so this gives the logical-line index range covering
+                // [startChar, endChar] in O(log n) instead of a full scan of every line in the doc.
+                val loIdx = floorIndex(lineStartOffsets, startChar).coerceAtLeast(0)
+                val hiIdx = floorIndex(lineStartOffsets, endChar).coerceIn(0, lineStartOffsets.lastIndex)
+
+                for (idx in loIdx..hiIdx) {
+                    val startOffset = lineStartOffsets[idx]
                     val safeOffset = startOffset.coerceAtMost(textLen)
                     val visualLine = layoutResult.getLineForOffset(safeOffset)
                     val topPx = layoutResult.getLineTop(visualLine)

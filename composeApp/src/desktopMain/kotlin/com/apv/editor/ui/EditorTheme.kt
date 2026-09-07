@@ -17,6 +17,9 @@ object EditorTheme {
     val GutterText = Color(0xFF6A6273)
     val Accent = Color(0xFFFBCB45)
 
+    /** Custom-drawn cross-line selection highlight in LargeEditorPane's passive lines (the active line's own selection uses BasicTextField's normal default instead). */
+    val SelectionBackground = Accent.copy(alpha = 0.35f)
+
     val Keyword = Color(0xFFF92672)
     val Type = Color(0xFF66D9EF)
     val String = Color(0xFFE6DB74)

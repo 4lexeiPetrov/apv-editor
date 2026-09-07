@@ -7,7 +7,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import com.apv.editor.largefile.LargeDocument
+import com.apv.editor.largefile.LineCol
 import com.apv.editor.platform.AutoSaver
+import com.apv.editor.platform.AutosaveMode
 import com.apv.editor.session.PaneSnapshot
 import com.apv.editor.session.SessionSnapshot
 import com.apv.editor.session.SessionWrite
@@ -32,13 +35,28 @@ class TabState(
     )
     var showPreview by mutableStateOf(false)
 
+    /**
+     * Non-null when this tab holds a file too large for the plain [textField]/`BasicTextField`
+     * path (see [LargeFileGuard]) — set by [loadLargeFrom], read by
+     * [com.apv.editor.ui.LargeEditorPane]. [textField]/[savedText] are unused and stay empty for
+     * such a tab; [largeCaret]/[largeSelectionAnchor] are its equivalent of
+     * `textField.selection`.
+     */
+    var largeDoc by mutableStateOf<LargeDocController?>(null)
+        private set
+
+    var largeCaret by mutableStateOf(LineCol(0, 0))
+    var largeSelectionAnchor by mutableStateOf<LineCol?>(null)
+
+    val isLargeFile: Boolean get() = largeDoc != null
+
     private val undoStack = ArrayDeque<TextFieldValue>()
     private val redoStack = ArrayDeque<TextFieldValue>()
     private var lastCoalesceTime = 0L
     private var lastCoalesceDirection = 0
 
     val isModified: Boolean
-        get() = textField.text != savedText
+        get() = largeDoc?.isDirty ?: (textField.text != savedText)
 
     val title: String
         get() = try {
@@ -77,7 +95,14 @@ class TabState(
         textField = new
     }
 
+    /** Returns true if something changed (a caret-only move counts as a no-op for large-file undo, since it isn't recorded there). */
     fun undo(): Boolean {
+        largeDoc?.let { doc ->
+            val caret = doc.undo() ?: return false
+            largeCaret = caret
+            largeSelectionAnchor = null
+            return true
+        }
         val previous = undoStack.removeLastOrNull() ?: return false
         pushRedo(textField)
         textField = previous
@@ -87,6 +112,12 @@ class TabState(
     }
 
     fun redo(): Boolean {
+        largeDoc?.let { doc ->
+            val caret = doc.redo() ?: return false
+            largeCaret = caret
+            largeSelectionAnchor = null
+            return true
+        }
         val next = redoStack.removeLastOrNull() ?: return false
         pushUndo(textField)
         textField = next
@@ -113,6 +144,7 @@ class TabState(
     }
 
     fun loadFrom(f: File) {
+        releaseLargeResources()
         val content = f.readText()
         file = f
         language = SyntaxDetector.detect(f.name)
@@ -121,14 +153,48 @@ class TabState(
         resetHistory()
     }
 
+    /** The [loadFrom] equivalent for a file [LargeFileGuard] classified as [LargeFileGuard.FileSizeClass.LARGE]. */
+    fun loadLargeFrom(f: File) {
+        releaseLargeResources()
+        val doc = LargeDocument.open(f)
+        file = f
+        language = SyntaxDetector.detect(f.name)
+        textField = TextFieldValue("")
+        savedText = ""
+        largeDoc = LargeDocController(doc)
+        largeCaret = LineCol(0, 0)
+        largeSelectionAnchor = null
+        resetHistory()
+    }
+
+    /** Releases the open file handle backing [largeDoc], if any. Safe to call even when this tab was never large. */
+    fun releaseLargeResources() {
+        largeDoc?.doc?.close()
+        largeDoc = null
+    }
+
     fun save(): Boolean {
         val f = file ?: return false
+        val large = largeDoc
+        if (large != null) {
+            large.doc.writeTo(f)
+            large.markSaved()
+            return true
+        }
         f.writeText(textField.text)
         savedText = textField.text
         return true
     }
 
     fun saveAs(f: File) {
+        val large = largeDoc
+        if (large != null) {
+            large.doc.writeTo(f)
+            large.markSaved()
+            file = f
+            language = SyntaxDetector.detect(f.name)
+            return
+        }
         file = f
         language = SyntaxDetector.detect(f.name)
         f.writeText(textField.text)
@@ -170,6 +236,15 @@ class PaneState {
         return tab
     }
 
+    /** [newTab]'s equivalent for a file [LargeFileGuard] classified as [LargeFileGuard.FileSizeClass.LARGE]. */
+    fun newLargeTab(file: File): TabState {
+        val tab = TabState(initialFile = file)
+        tab.loadLargeFrom(file)
+        tabs += tab
+        selectedIndex = tabs.lastIndex
+        return tab
+    }
+
     /** Reuses an empty/untitled current tab if possible; otherwise opens a new one. */
     fun openFile(file: File): TabState {
         val current = currentTab
@@ -185,9 +260,25 @@ class PaneState {
         }
     }
 
+    /** [openFile]'s equivalent for a file [LargeFileGuard] classified as [LargeFileGuard.FileSizeClass.LARGE]. */
+    fun openLargeFile(file: File): TabState {
+        val current = currentTab
+        return if (current != null &&
+            current.file == null &&
+            !current.isModified &&
+            current.textField.text.isEmpty()
+        ) {
+            current.loadLargeFrom(file)
+            current
+        } else {
+            newLargeTab(file)
+        }
+    }
+
     fun removeTab(tab: TabState) {
         val index = tabs.indexOf(tab)
         if (index < 0) return
+        tab.releaseLargeResources()
         tabs.removeAt(index)
         selectedIndex = if (tabs.isNotEmpty()) {
             selectedIndex.coerceAtMost(tabs.lastIndex)
@@ -220,7 +311,8 @@ class EditorState {
         private set
     var tabDrag by mutableStateOf<TabDragSession?>(null)
         private set
-    val autoSaver = AutoSaver(delayMs = 1500)
+    var autosaveMode: AutosaveMode by mutableStateOf(AutosaveMode.AfterDelay(1500))
+    val autoSaver = AutoSaver()
 
     val focusedPane: PaneState
         get() = panes.firstOrNull { it.id == focusedPaneId } ?: panes[0]
@@ -349,10 +441,20 @@ class EditorState {
         set(value) { focusedPane.selectedIndex = value }
 
     fun newTab(file: File? = null) {
-        if (file != null && LargeFileGuard.isOversized(file, fontSize)) {
-            pendingOversizedFile = file
-            statusMessage = "${file.name} is too large to open"
-            return
+        if (file != null) {
+            when (LargeFileGuard.classify(file, fontSize)) {
+                LargeFileGuard.FileSizeClass.UNSUPPORTED -> {
+                    pendingOversizedFile = file
+                    statusMessage = "${file.name} is too large to open"
+                    return
+                }
+                LargeFileGuard.FileSizeClass.LARGE -> {
+                    focusedPane.newLargeTab(file)
+                    statusMessage = "Opened ${file.name} in large-file mode"
+                    return
+                }
+                LargeFileGuard.FileSizeClass.NORMAL -> {}
+            }
         }
         focusedPane.newTab(file)
     }
@@ -370,10 +472,18 @@ class EditorState {
                 return
             }
         }
-        if (LargeFileGuard.isOversized(file, fontSize)) {
-            pendingOversizedFile = file
-            statusMessage = "${file.name} is too large to open"
-            return
+        when (LargeFileGuard.classify(file, fontSize)) {
+            LargeFileGuard.FileSizeClass.UNSUPPORTED -> {
+                pendingOversizedFile = file
+                statusMessage = "${file.name} is too large to open"
+                return
+            }
+            LargeFileGuard.FileSizeClass.LARGE -> {
+                pane.openLargeFile(file)
+                statusMessage = "Opened ${file.name} in large-file mode"
+                return
+            }
+            LargeFileGuard.FileSizeClass.NORMAL -> {}
         }
         pane.openFile(file)
         statusMessage = "Opened ${file.name}"
@@ -425,14 +535,56 @@ class EditorState {
         if (tab.redo()) statusMessage = "Redo"
     }
 
+    /**
+     * Debounce-triggered autosave — only actually schedules anything in
+     * [AutosaveMode.AfterDelay]; see [autosaveOnFocusLost]/[autosaveAllOnWindowFocusLost] for the
+     * other modes.
+     */
     fun scheduleAutosave(tab: TabState) {
+        val mode = autosaveMode as? AutosaveMode.AfterDelay ?: return
         if (tab.file == null || !tab.isModified) return
-        autoSaver.schedule(tab.id) {
+        autoSaver.schedule(tab.id, mode.delayMs) {
             if (tab.isModified && tab.file != null) {
                 tab.save()
                 statusMessage = "Auto-saved ${tab.file?.name}"
             }
         }
+    }
+
+    /**
+     * Called when [tab]'s editing surface (`EditorPane`/`LargeEditorPane`) is disposed because it
+     * stopped being the active tab — switched away from, closed, or its pane closed. Only acts in
+     * [AutosaveMode.OnFocusChange]; a tab that's dirty at dispose time in any other mode is left
+     * alone (its content lives on in the session draft either way — see [tabToSnapshot]).
+     *
+     * Deliberately keyed off the tab's own composable lifecycle rather than lower-level Compose
+     * focus events: in [com.apv.editor.ui.LargeEditorPane], the only real focusable field is
+     * whichever line the caret is on, which gets reassigned — and re-focused — on every Up/Down
+     * press, so raw focus-lost events there would fire far more often than a real "switched away"
+     * does. One known gap: switching between panes in a split layout *without* switching tabs
+     * doesn't currently count as losing focus here.
+     */
+    fun autosaveOnFocusLost(tab: TabState) {
+        if (autosaveMode != AutosaveMode.OnFocusChange) return
+        if (tab.file == null || !tab.isModified) return
+        tab.save()
+        statusMessage = "Auto-saved ${tab.file?.name}"
+    }
+
+    /**
+     * Saves every dirty, saveable tab across all panes. Only acts in [AutosaveMode.OnWindowChange];
+     * called when the whole app window loses OS-level focus (see Main.kt).
+     */
+    fun autosaveAllOnWindowFocusLost() {
+        if (autosaveMode != AutosaveMode.OnWindowChange) return
+        for (pane in panes) {
+            for (tab in pane.tabs) {
+                if (tab.file != null && tab.isModified) {
+                    tab.save()
+                }
+            }
+        }
+        statusMessage = "Auto-saved"
     }
 
     fun toWrite(window: WindowSnapshot?): SessionWrite {
@@ -460,6 +612,20 @@ class EditorState {
 
     private fun tabToSnapshot(tab: TabState, drafts: MutableMap<String, String>): TabSnapshot {
         val path = tab.file?.absolutePath
+        if (tab.isLargeFile) {
+            // Large-file tabs never buffer their full text as a draft (infeasible for a
+            // multi-gigabyte document) — edits go straight through to disk via autosave/manual
+            // save instead, so there's nothing to snapshot besides which file it is. The caret
+            // position isn't restored across relaunches for these; see restoreTab below.
+            return TabSnapshot(
+                path = path,
+                language = tab.language.name,
+                cursor = 0,
+                showPreview = tab.showPreview,
+                draftPath = null,
+                diskMtime = null,
+            )
+        }
         val cursor = tab.textField.selection.start
         val text = tab.textField.text
         val needsDraft = (tab.file == null && text.isNotEmpty()) ||
@@ -576,9 +742,7 @@ private fun restoreTab(
     }
 
     val file = File(path)
-    val diskText = try { if (file.isFile) file.readText() else null } catch (_: Throwable) { null }
-
-    if (diskText == null) {
+    if (!file.isFile) {
         val tab = TabState(initialFile = null, initialText = "")
         tab.language = language
         tab.showPreview = snap.showPreview
@@ -590,15 +754,40 @@ private fun restoreTab(
         return tab
     }
 
-    if (LargeFileGuard.isOversized(diskText, fontSize)) {
+    // Classify from the file's line count (streamed, not loaded) before ever reading its content —
+    // the whole point of large-file mode is to avoid pulling a huge file fully into memory, and
+    // that includes during session restore.
+    when (LargeFileGuard.classify(file, fontSize)) {
+        LargeFileGuard.FileSizeClass.UNSUPPORTED -> {
+            val tab = TabState(initialFile = null, initialText = "")
+            tab.language = language
+            tab.showPreview = snap.showPreview
+            onStatus("${file.name} is too large to reopen automatically — use File > Open to load it")
+            return tab
+        }
+        LargeFileGuard.FileSizeClass.LARGE -> {
+            val tab = TabState(initialFile = file)
+            tab.loadLargeFrom(file)
+            tab.language = language
+            tab.showPreview = snap.showPreview
+            // Large-file tabs don't carry a draft or a restorable cursor position (see
+            // tabToSnapshot) — the caret simply starts at the top of the file.
+            return tab
+        }
+        LargeFileGuard.FileSizeClass.NORMAL -> {}
+    }
+
+    val diskText = try { file.readText() } catch (_: Throwable) { null }
+
+    if (diskText == null) {
         val tab = TabState(initialFile = null, initialText = "")
         tab.language = language
         tab.showPreview = snap.showPreview
-        if (!draftText.isNullOrEmpty() && !LargeFileGuard.isOversized(draftText, fontSize)) {
+        if (!draftText.isNullOrEmpty()) {
             val cursor = snap.cursor.coerceIn(0, draftText.length)
             tab.textField = TextFieldValue(draftText, selection = TextRange(cursor))
         }
-        onStatus("${file.name} is too large to reopen automatically — use File > Open to load it")
+        onStatus("Missing file: $path — recovered unsaved buffer")
         return tab
     }
 
