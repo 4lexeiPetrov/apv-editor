@@ -35,6 +35,8 @@ internal fun LineGutter(
     layoutResult: TextLayoutResult?,
     scrollState: ScrollState,
     fontSize: Int,
+    /** Caret offset in [text]; the logical line containing it gets the accent colour. */
+    cursor: Int = -1,
 ) {
     val gutterStyle = TextStyle(
         color = EditorTheme.GutterText,
@@ -43,6 +45,7 @@ internal fun LineGutter(
         lineHeight = (fontSize * 1.4).sp,
         textAlign = TextAlign.End,
     )
+    val activeStyle = gutterStyle.copy(color = EditorTheme.Accent)
     val measurer = rememberTextMeasurer()
     val lineCount = remember(text) { 1 + text.count { it == '\n' } }
     val widestNumber = remember(lineCount) { "9".repeat(lineCount.toString().length.coerceAtLeast(2)) }
@@ -63,13 +66,15 @@ internal fun LineGutter(
         list
     }
 
+    val activeLineIndex = if (cursor < 0) -1 else floorIndex(lineStartOffsets, cursor)
+
     val contentHeightDp = layoutResult?.let { with(density) { it.size.height.toDp() } } ?: 0.dp
 
     Box(
         modifier = Modifier
             .fillMaxHeight()
             .width(totalWidth)
-            .background(EditorTheme.Surface)
+            .background(EditorTheme.Background)
             .verticalScroll(scrollState)
             .padding(start = 8.dp, top = 6.dp, end = 12.dp, bottom = 6.dp),
     ) {
@@ -107,7 +112,7 @@ internal fun LineGutter(
                     val topDp = with(density) { topPx.toDp() }
                     Text(
                         text = (idx + 1).toString(),
-                        style = gutterStyle,
+                        style = if (idx == activeLineIndex) activeStyle else gutterStyle,
                         softWrap = false,
                         modifier = Modifier
                             .offset(y = topDp)

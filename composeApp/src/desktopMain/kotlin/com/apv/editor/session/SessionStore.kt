@@ -50,6 +50,14 @@ class SessionStore(
         null
     }
 
+    /** Last-modified time of a draft side file, or null when it does not exist. */
+    fun draftModified(relativePath: String): Long? = try {
+        val f = File(rootDir, relativePath)
+        if (f.isFile) f.lastModified() else null
+    } catch (_: Throwable) {
+        null
+    }
+
     /**
      * Debounced schedule. The most recent producer wins — by the time the
      * runnable fires (or [flush] runs), it computes a fresh [SessionWrite]
@@ -96,6 +104,9 @@ class SessionStore(
                 target.parentFile?.mkdirs()
                 atomicWriteText(target, text)
                 keep += target.canonicalPath
+            }
+            for (relPath in write.keepDrafts) {
+                keep += File(rootDir, relPath).canonicalPath
             }
             draftsDir.listFiles()?.forEach { f ->
                 if (f.canonicalPath !in keep && !f.name.endsWith(".tmp")) {

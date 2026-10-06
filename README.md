@@ -1,6 +1,6 @@
 # APV Editor
 
-A Compose Multiplatform Desktop text editor with live syntax highlighting, autosave, multi-tab editing, Markdown preview, and session restore. macOS-first (DMG packaging + Finder "Open With…" integration), portable to other JVM desktops.
+A Compose Multiplatform Desktop text editor with live syntax highlighting, autosave, multi-tab editing, Markdown preview, and a start screen with recent folders, recent files and unsaved drafts kept between launches. macOS-first (DMG packaging + Finder "Open With…" integration), portable to other JVM desktops.
 
 ## Stack
 

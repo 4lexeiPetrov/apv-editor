@@ -2,20 +2,20 @@ package com.apv.editor.ui
 
 import androidx.compose.foundation.ScrollbarStyle
 import androidx.compose.foundation.defaultScrollbarStyle
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
 /**
- * Scrollbar coloring shared by [EditorPane] and [LargeEditorPane].
- *
- * Uses [EditorTheme.OnSurfaceMuted] (not [EditorTheme.Border]) as the resting color: Border reads
- * almost the same as [EditorTheme.Background] against the dark theme, which made the bar
- * effectively invisible until hovered — bad for a control the user needs to *find* first. Slightly
- * thicker than Compose's own default (8.dp) for the same reason.
+ * Scrollbar look shared by [EditorPane] and [LargeEditorPane], from the design canvas: a slim
+ * rounded thumb (8dp: the canvas draws 6dp, which was too thin to grab) in [EditorTheme.Outline], which is visible on the dark background without being
+ * the brightest thing on screen. It lightens under the pointer so it is easy to tell when it is
+ * grabbed. ([EditorTheme.Border] was tried first and was too close to the background to find.)
  */
 @Composable
 internal fun editorScrollbarStyle(): ScrollbarStyle = defaultScrollbarStyle().copy(
-    thickness = 10.dp,
-    unhoverColor = EditorTheme.OnSurfaceMuted,
-    hoverColor = EditorTheme.Accent,
+    thickness = 8.dp,
+    shape = RoundedCornerShape(4.dp),
+    unhoverColor = EditorTheme.Outline,
+    hoverColor = EditorTheme.GutterText,
 )

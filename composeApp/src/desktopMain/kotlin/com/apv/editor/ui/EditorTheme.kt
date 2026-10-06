@@ -1,34 +1,39 @@
 package com.apv.editor.ui
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
 import com.apv.editor.syntax.TokenKind
 
 object EditorTheme {
-    val Background = Color(0xFF2C2832)
-    val Surface = Color(0xFF3A3540)
-    val SurfaceVariant = Color(0xFF403B4A)
-    val Border = Color(0xFF4A4452)
-    val OnSurface = Color(0xFFE6E1E8)
-    val OnSurfaceMuted = Color(0xFF9E96A8)
-    val GutterText = Color(0xFF6A6273)
+    val Background = Color(0xFF212121)
+    val Surface = Color(0xFF1A1A1A)
+    val SurfaceVariant = Color(0xFF262626)
+    val Border = Color(0xFF303030)
+    /** Input and menu outlines; one step lighter than [Border]. */
+    val Outline = Color(0xFF424242)
+    val OnSurface = Color(0xFFFAFAFA)
+    val OnSurfaceMuted = Color(0xFFA8A8A8)
+    val GutterText = Color(0xFF888888)
     val Accent = Color(0xFFFBCB45)
 
     /** Custom-drawn cross-line selection highlight in LargeEditorPane's passive lines (the active line's own selection uses BasicTextField's normal default instead). */
     val SelectionBackground = Accent.copy(alpha = 0.35f)
 
-    val Keyword = Color(0xFFF92672)
-    val Type = Color(0xFF66D9EF)
-    val String = Color(0xFFE6DB74)
-    val Number = Color(0xFFAE81FF)
-    val Comment = Color(0xFF75715E)
-    val Annotation = Color(0xFFFD971F)
-    val Function = Color(0xFFA6E22E)
-    val Heading = Color(0xFFF92672)
-    val Link = Color(0xFF66D9EF)
+    val Keyword = Color(0xFFE91E63)
+    val Type = Color(0xFF81D4FA)
+    val String = Color(0xFFFFF59D)
+    val Number = Color(0xFFE91E63)
+    val Comment = Color(0xFF888888)
+    val Annotation = Color(0xFFFFAB40)
+    val Function = Color(0xFF9EE34F)
+    val Heading = Color(0xFFE91E63)
+    val Link = Color(0xFF81D4FA)
     val BracketError = Color(0xFFFF5370)
 
     /** Rainbow bracket palette, indexed by nesting depth (cycles via modulo). */
@@ -41,12 +46,39 @@ object EditorTheme {
         Color(0xFFAB9DF2), // violet
     )
 
+    /**
+     * Every role Material 3 components read is set here, so dialogs, menus and buttons pick up the
+     * editor palette instead of Material's default purple-tinted dark scheme.
+     */
     val colorScheme = darkColorScheme(
         primary = Accent,
+        onPrimary = Background,
+        secondary = Accent,
+        onSecondary = Background,
         background = Background,
-        surface = Surface,
         onBackground = OnSurface,
+        surface = Surface,
         onSurface = OnSurface,
+        surfaceVariant = SurfaceVariant,
+        onSurfaceVariant = OnSurfaceMuted,
+        surfaceContainerLowest = Surface,
+        surfaceContainerLow = Background,
+        surfaceContainer = SurfaceVariant,
+        surfaceContainerHigh = SurfaceVariant,
+        surfaceContainerHighest = Border,
+        outline = Outline,
+        outlineVariant = Border,
+        error = BracketError,
+        onError = Background,
+    )
+
+    /** Tighter corners than Material's defaults (which go up to 28dp), to suit a dense editor. */
+    val shapes = Shapes(
+        extraSmall = RoundedCornerShape(4.dp),
+        small = RoundedCornerShape(6.dp),
+        medium = RoundedCornerShape(8.dp),
+        large = RoundedCornerShape(12.dp),
+        extraLarge = RoundedCornerShape(12.dp),
     )
 
     fun styleFor(kind: TokenKind, depth: Int = -1): SpanStyle = when (kind) {

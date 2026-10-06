@@ -57,7 +57,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi)
             packageName = "APV Editor"
-            packageVersion = "1.5.3"
+            packageVersion = "2.0.0"
             description = "APV Text Editor"
             vendor = "APV"
 

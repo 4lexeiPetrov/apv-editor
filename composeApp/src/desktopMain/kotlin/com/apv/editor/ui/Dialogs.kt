@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,14 +28,41 @@ internal fun UnsavedChangesDialog(
         title = { Text(stringResource(Res.string.unsaved_title)) },
         text = { Text(stringResource(Res.string.unsaved_text, displayName)) },
         confirmButton = {
-            TextButton(onClick = onSave) { Text(stringResource(Res.string.unsaved_btn_save)) }
+            // The safe choice is the one filled button; the destructive one is tinted as an error.
+            Button(onClick = onSave) { Text(stringResource(Res.string.unsaved_btn_save)) }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onDiscard) { Text(stringResource(Res.string.unsaved_btn_dont_save)) }
+                TextButton(
+                    onClick = onDiscard,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(Res.string.unsaved_btn_dont_save)) }
                 Spacer(Modifier.width(4.dp))
                 TextButton(onClick = onCancel) { Text(stringResource(Res.string.unsaved_btn_cancel)) }
             }
+        },
+    )
+}
+
+/** Confirms throwing away an unsaved buffer from the start screen: there is no undo for it. */
+@Composable
+internal fun DiscardDraftDialog(
+    displayName: String,
+    onDiscard: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(stringResource(Res.string.discard_draft_title)) },
+        text = { Text(stringResource(Res.string.discard_draft_text, displayName)) },
+        confirmButton = {
+            TextButton(
+                onClick = onDiscard,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) { Text(stringResource(Res.string.discard_draft_btn)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text(stringResource(Res.string.unsaved_btn_cancel)) }
         },
     )
 }
@@ -75,11 +105,14 @@ internal fun LayoutMergeDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = onSaveAll) { Text(stringResource(Res.string.layout_merge_btn_save_all)) }
+            Button(onClick = onSaveAll) { Text(stringResource(Res.string.layout_merge_btn_save_all)) }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onMergeAnyway) { Text(stringResource(Res.string.layout_merge_btn_merge_anyway)) }
+                TextButton(
+                    onClick = onMergeAnyway,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(Res.string.layout_merge_btn_merge_anyway)) }
                 Spacer(Modifier.width(4.dp))
                 TextButton(onClick = onCancel) { Text(stringResource(Res.string.unsaved_btn_cancel)) }
             }

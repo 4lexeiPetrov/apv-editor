@@ -15,11 +15,16 @@ import com.apv.editor.session.PaneSnapshot
 import com.apv.editor.session.SessionSnapshot
 import com.apv.editor.session.SessionWrite
 import com.apv.editor.session.TabSnapshot
+import com.apv.editor.session.UnsavedSnapshot
 import com.apv.editor.session.WindowSnapshot
 import com.apv.editor.syntax.SyntaxDetector
 import com.apv.editor.syntax.SyntaxLanguage
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+
+/** How a Markdown tab is shown: source only, source beside the rendered preview, or preview only. */
+enum class PreviewMode { Edit, Split, Preview }
 
 class TabState(
     initialFile: File? = null,
@@ -33,7 +38,42 @@ class TabState(
     var language by mutableStateOf(
         if (initialFile != null) SyntaxDetector.detect(initialFile.name) else SyntaxLanguage.NONE
     )
-    var showPreview by mutableStateOf(false)
+    var previewMode by mutableStateOf(PreviewMode.Edit)
+
+    /** True whenever the rendered preview is visible at all. Kept for existing call sites and old session files. */
+    var showPreview: Boolean
+        get() = previewMode != PreviewMode.Edit
+        set(value) { previewMode = if (value) PreviewMode.Split else PreviewMode.Edit }
+
+    /** The N in "Untitled N" while this tab has no file; 0 when it was created for a file. */
+    var untitledIndex by mutableStateOf(if (initialFile == null) nextUntitled.getAndIncrement() else 0)
+
+    // Find bar state (small-file tabs only; see com.apv.editor.ui.FindBar).
+    var findOpen by mutableStateOf(false)
+    var findQuery by mutableStateOf("")
+    var findCaseSensitive by mutableStateOf(false)
+    var findRegex by mutableStateOf(false)
+    var findMatches by mutableStateOf<List<IntRange>>(emptyList())
+    var findIndex by mutableStateOf(0)
+    /** Bumped to ask the editor to scroll the current match into view. */
+    var findRevealTick by mutableStateOf(0)
+    /** Bumped to ask the find field to take keyboard focus (Cmd/Ctrl+F while already open). */
+    var findFocusTick by mutableStateOf(0)
+    /** Bumped to ask the editor text field to take keyboard focus back. */
+    var editorFocusTick by mutableStateOf(0)
+
+    /** Last-modified time of [file] when this tab last read or wrote it; 0 when unknown. Plain state, not observed. */
+    var loadedMtime: Long = 0L
+
+    /**
+     * Session-relative path of this tab's draft side file. Random per tab, so a draft kept for the
+     * start screen is never overwritten by a tab from a later launch; a tab restored from such a
+     * draft takes over that draft's path instead.
+     */
+    var draftPath: String = "drafts/${java.util.UUID.randomUUID()}.txt"
+
+    /** Epoch millis of the last text change in this session; 0 when untouched. Plain state, not observed. */
+    var editedAt: Long = 0L
 
     /**
      * Non-null when this tab holds a file too large for the plain [textField]/`BasicTextField`
@@ -58,20 +98,27 @@ class TabState(
     val isModified: Boolean
         get() = largeDoc?.isDirty ?: (textField.text != savedText)
 
+    /**
+     * The file name, or "Untitled N" for a buffer with no file. Deliberately never derived from the
+     * buffer's content: an unsaved note's first line used to be shown here, which put whatever was
+     * typed (including secrets) into the tab strip and the window title.
+     */
     val title: String
-        get() = try {
+        get() {
             val name = file?.name
-            if (!name.isNullOrBlank()) {
-                name
-            } else {
-                val preview = textField.text
-                    .replace(Regex("\\s+"), " ")
-                    .trim()
-                    .take(50)
-                if (preview.isEmpty()) "Untitled" else preview
+            return when {
+                !name.isNullOrBlank() -> name
+                untitledIndex > 0 -> "Untitled $untitledIndex"
+                else -> "Untitled"
             }
+        }
+
+    /** Short single-line preview of an unsaved buffer, shown only in the tab's hover tooltip. */
+    val contentPreview: String
+        get() = if (isLargeFile) "" else try {
+            textField.text.take(200).replace(Regex("\\s+"), " ").trim().take(60)
         } catch (_: Throwable) {
-            "Untitled"
+            ""
         }
 
     fun updateText(new: TextFieldValue) {
@@ -92,6 +139,7 @@ class TabState(
         redoStack.clear()
         lastCoalesceTime = now
         lastCoalesceDirection = direction
+        editedAt = now
         textField = new
     }
 
@@ -150,8 +198,23 @@ class TabState(
         language = SyntaxDetector.detect(f.name)
         textField = TextFieldValue(content)
         savedText = content
+        loadedMtime = mtimeOf(f)
         resetHistory()
     }
+
+    /** Re-reads [file] from disk, discarding the buffer. Keeps the caret offset where possible. */
+    fun reloadFromDisk() {
+        val f = file ?: return
+        if (isLargeFile) return
+        val content = f.readText()
+        val cursor = textField.selection.start.coerceIn(0, content.length)
+        textField = TextFieldValue(content, selection = TextRange(cursor))
+        savedText = content
+        loadedMtime = mtimeOf(f)
+        resetHistory()
+    }
+
+    private fun mtimeOf(f: File): Long = try { f.lastModified() } catch (_: Throwable) { 0L }
 
     /** The [loadFrom] equivalent for a file [LargeFileGuard] classified as [LargeFileGuard.FileSizeClass.LARGE]. */
     fun loadLargeFrom(f: File) {
@@ -183,6 +246,7 @@ class TabState(
         }
         f.writeText(textField.text)
         savedText = textField.text
+        loadedMtime = mtimeOf(f)
         return true
     }
 
@@ -199,10 +263,17 @@ class TabState(
         language = SyntaxDetector.detect(f.name)
         f.writeText(textField.text)
         savedText = textField.text
+        loadedMtime = mtimeOf(f)
     }
 
     companion object {
         private val nextId = AtomicLong(1)
+        private val nextUntitled = AtomicInteger(1)
+
+        /** Makes the next file-less tab "Untitled [next]". Called after a session restore. */
+        fun resetUntitledCounter(next: Int) {
+            nextUntitled.set(next.coerceAtLeast(1))
+        }
         private const val MAX_HISTORY = 15
         private const val COALESCE_MS = 500L
     }
@@ -302,7 +373,19 @@ class EditorState {
     var verticalSplit by mutableStateOf(0.5f)
         private set
     var fontSize by mutableStateOf(14)
-    var statusMessage by mutableStateOf("Ready")
+    var statusMessage by mutableStateOf("")
+    var paletteOpen by mutableStateOf(false)
+
+    /** A dirty tab whose file changed on disk while the app was in the background; drives the reload notice. */
+    var diskChangeNotice by mutableStateOf<TabState?>(null)
+
+    // Project sidebar.
+    var projectRoot by mutableStateOf<File?>(null)
+    var sidebarVisible by mutableStateOf(false)
+    var sidebarWidth by mutableStateOf(240f)
+    val expandedDirs: SnapshotStateList<String> = mutableStateListOf()
+    /** Bumped to make the sidebar re-read its folders from disk. */
+    var sidebarRefreshTick by mutableStateOf(0)
     var pendingClose by mutableStateOf<TabState?>(null)
         private set
     var pendingLayoutChange by mutableStateOf<PendingLayoutChange?>(null)
@@ -313,6 +396,22 @@ class EditorState {
         private set
     var autosaveMode: AutosaveMode by mutableStateOf(AutosaveMode.AfterDelay(1500))
     val autoSaver = AutoSaver()
+
+    // Start screen (shown while no tab is open): what earlier sessions left behind.
+    /** Absolute paths, newest first. */
+    val recentFolders: SnapshotStateList<String> = mutableStateListOf()
+    /** Absolute paths, newest first. */
+    val recentFiles: SnapshotStateList<String> = mutableStateListOf()
+    /** Unsaved buffers that are not open in a tab, newest edit first. */
+    val unsavedDrafts: SnapshotStateList<UnsavedDraft> = mutableStateListOf()
+    /** A draft whose discard button was clicked; drives the confirmation dialog. */
+    var pendingDraftDiscard by mutableStateOf<UnsavedDraft?>(null)
+        private set
+    /** Reads a draft side file by its session-relative path. Main points this at the session store. */
+    var draftReader: (String) -> String? = { null }
+
+    /** True while no pane has a tab: the start screen takes the place of the editor. */
+    val hasNoTabs: Boolean get() = panes.all { it.tabs.isEmpty() }
 
     val focusedPane: PaneState
         get() = panes.firstOrNull { it.id == focusedPaneId } ?: panes[0]
@@ -389,6 +488,8 @@ class EditorState {
     companion object {
         const val SPLIT_MIN = 0.1f
         const val SPLIT_MAX = 0.9f
+        /** How many recent folders and recent files are remembered (each). */
+        const val MAX_RECENT = 20
     }
 
     fun beginTabDrag(tab: TabState, source: PaneState) {
@@ -450,6 +551,7 @@ class EditorState {
                 }
                 LargeFileGuard.FileSizeClass.LARGE -> {
                     focusedPane.newLargeTab(file)
+                    noteRecentFile(file)
                     statusMessage = "Opened ${file.name} in large-file mode"
                     return
                 }
@@ -457,6 +559,7 @@ class EditorState {
             }
         }
         focusedPane.newTab(file)
+        if (file != null) noteRecentFile(file)
     }
 
     fun openFile(file: File) = openFile(focusedPane, file)
@@ -472,6 +575,16 @@ class EditorState {
                 return
             }
         }
+        // The file has unsaved changes waiting on the start screen: opening it brings those back
+        // rather than leaving two versions of the same file around.
+        val waiting = unsavedDrafts.firstOrNull { draft ->
+            draft.path?.let { matchesCanonical(File(it), canonical) } == true
+        }
+        if (waiting != null) {
+            focusedPaneId = pane.id
+            restoreDraft(waiting)
+            return
+        }
         when (LargeFileGuard.classify(file, fontSize)) {
             LargeFileGuard.FileSizeClass.UNSUPPORTED -> {
                 pendingOversizedFile = file
@@ -480,13 +593,87 @@ class EditorState {
             }
             LargeFileGuard.FileSizeClass.LARGE -> {
                 pane.openLargeFile(file)
+                noteRecentFile(file)
                 statusMessage = "Opened ${file.name} in large-file mode"
                 return
             }
             LargeFileGuard.FileSizeClass.NORMAL -> {}
         }
         pane.openFile(file)
+        noteRecentFile(file)
         statusMessage = "Opened ${file.name}"
+    }
+
+    private fun noteRecent(list: SnapshotStateList<String>, path: String) {
+        list.remove(path)
+        list.add(0, path)
+        while (list.size > MAX_RECENT) list.removeAt(list.lastIndex)
+    }
+
+    /** Moves [file] to the top of the start screen's recent files. */
+    fun noteRecentFile(file: File) = noteRecent(recentFiles, file.absolutePath)
+
+    /** Opens a recent file from the start screen. A path that no longer exists is dropped from the list instead. */
+    fun openRecentFile(path: String) {
+        val file = File(path)
+        if (!file.isFile) {
+            recentFiles.remove(path)
+            statusMessage = "${file.name} no longer exists"
+            return
+        }
+        openFile(file)
+    }
+
+    /** Opens a recent folder from the start screen. A path that no longer exists is dropped from the list instead. */
+    fun openRecentFolder(path: String) {
+        val dir = File(path)
+        if (!dir.isDirectory) {
+            recentFolders.remove(path)
+            statusMessage = "${dir.name} no longer exists"
+            return
+        }
+        openProject(dir)
+    }
+
+    /**
+     * Opens an unsaved buffer from the start screen in the focused pane. The draft wins even when
+     * its file changed on disk since: the user asked for this text, and a status message says so.
+     */
+    fun restoreDraft(draft: UnsavedDraft) {
+        if (!unsavedDrafts.remove(draft)) return
+        var status: String? = null
+        val tab = restoreTab(draft.toTabSnapshot(), fontSize, draftReader) { status = it }
+        tab.draftPath = draft.draftPath
+        tab.editedAt = draft.editedAt
+        val pane = focusedPane
+        pane.tabs += tab
+        pane.selectedIndex = pane.tabs.lastIndex
+        val recorded = draft.diskMtime
+        if (status == null && recorded != null && tab.file != null && tab.loadedMtime != recorded) {
+            status = "${tab.title} changed on disk after this draft was written"
+        }
+        statusMessage = status ?: "Restored ${tab.title}"
+    }
+
+    fun restoreAllDrafts() {
+        val drafts = unsavedDrafts.toList()
+        for (draft in drafts) restoreDraft(draft)
+        if (drafts.size > 1) statusMessage = "Restored ${drafts.size} unsaved files"
+    }
+
+    fun requestDraftDiscard(draft: UnsavedDraft) {
+        pendingDraftDiscard = draft
+    }
+
+    /** Drops the draft from the list; its side file is pruned by the next session write. */
+    fun confirmDraftDiscard() {
+        val draft = pendingDraftDiscard ?: return
+        pendingDraftDiscard = null
+        unsavedDrafts.remove(draft)
+    }
+
+    fun cancelDraftDiscard() {
+        pendingDraftDiscard = null
     }
 
     private fun canonicalOf(f: File): File = try { f.canonicalFile } catch (_: Throwable) { f }
@@ -528,6 +715,97 @@ class EditorState {
     fun undo() {
         val tab = currentTab ?: return
         if (tab.undo()) statusMessage = "Undo"
+    }
+
+    /** Opens the find bar for the current tab (or re-focuses it). Not available for large-file tabs yet. */
+    fun openFind() {
+        val tab = currentTab ?: return
+        if (tab.isLargeFile) {
+            statusMessage = "Find is not available in large-file mode yet"
+            return
+        }
+        tab.findOpen = true
+        tab.findFocusTick++
+    }
+
+    fun closeFind(tab: TabState) {
+        tab.findOpen = false
+        tab.findMatches = emptyList()
+        tab.findIndex = 0
+        tab.editorFocusTick++
+    }
+
+    /** Moves to the next ([delta] = 1) or previous (-1) match, wrapping around. */
+    fun stepFind(tab: TabState, delta: Int) {
+        val count = tab.findMatches.size
+        if (count == 0) return
+        tab.findIndex = ((tab.findIndex + delta) % count + count) % count
+        tab.findRevealTick++
+    }
+
+    /**
+     * Compares every open file's modified time with what its tab last read or wrote. A clean tab is
+     * reloaded silently; a dirty one raises [diskChangeNotice] so the user decides. Called when the
+     * window regains focus. Large-file tabs are skipped: the file on disk is their buffer.
+     */
+    fun checkExternalChanges() {
+        for (pane in panes) {
+            for (tab in pane.tabs) {
+                val f = tab.file ?: continue
+                if (tab.isLargeFile || tab.loadedMtime == 0L) continue
+                val now = try { f.lastModified() } catch (_: Throwable) { 0L }
+                if (now == 0L || now == tab.loadedMtime) continue
+                if (tab.isModified) {
+                    tab.loadedMtime = now
+                    diskChangeNotice = tab
+                } else {
+                    try {
+                        tab.reloadFromDisk()
+                        statusMessage = "Reloaded ${f.name}"
+                    } catch (_: Throwable) {
+                        tab.loadedMtime = now
+                    }
+                }
+            }
+        }
+        if (projectRoot != null) sidebarRefreshTick++
+    }
+
+    fun reloadNoticedTab() {
+        val tab = diskChangeNotice ?: return
+        diskChangeNotice = null
+        try {
+            tab.reloadFromDisk()
+            statusMessage = "Reloaded ${tab.file?.name}"
+        } catch (_: Throwable) {
+            statusMessage = "Could not reload ${tab.file?.name}"
+        }
+    }
+
+    fun dismissDiskChangeNotice() {
+        diskChangeNotice = null
+    }
+
+    fun openProject(dir: File) {
+        projectRoot = dir
+        noteRecent(recentFolders, dir.absolutePath)
+        expandedDirs.clear()
+        sidebarVisible = true
+        sidebarRefreshTick++
+        statusMessage = "Opened folder ${dir.name}"
+    }
+
+    fun toggleSidebar() {
+        if (projectRoot == null) {
+            statusMessage = "Open a folder first (File > Open Folder)"
+            return
+        }
+        sidebarVisible = !sidebarVisible
+    }
+
+    fun toggleDir(dir: File) {
+        val path = dir.absolutePath
+        if (!expandedDirs.remove(path)) expandedDirs += path
     }
 
     fun redo() {
@@ -605,8 +883,16 @@ class EditorState {
                 focusedPaneIndex = focusedIdx,
                 window = window,
                 panes = paneSnapshots,
+                projectRoot = projectRoot?.absolutePath,
+                sidebarVisible = sidebarVisible,
+                sidebarWidth = sidebarWidth.toInt(),
+                expandedDirs = expandedDirs.toList(),
+                recentFolders = recentFolders.toList(),
+                recentFiles = recentFiles.toList(),
+                unsaved = unsavedDrafts.map { it.toSnapshot() },
             ),
             drafts = drafts,
+            keepDrafts = unsavedDrafts.map { it.draftPath }.toSet(),
         )
     }
 
@@ -624,13 +910,14 @@ class EditorState {
                 showPreview = tab.showPreview,
                 draftPath = null,
                 diskMtime = null,
+                previewMode = tab.previewMode.name,
             )
         }
         val cursor = tab.textField.selection.start
         val text = tab.textField.text
         val needsDraft = (tab.file == null && text.isNotEmpty()) ||
             (tab.file != null && tab.isModified)
-        val draftPath = if (needsDraft) "drafts/${tab.id}.txt" else null
+        val draftPath = if (needsDraft) tab.draftPath else null
         if (draftPath != null) drafts[draftPath] = text
         val mtime = if (needsDraft && tab.file != null) {
             try { tab.file?.lastModified() } catch (_: Throwable) { null }
@@ -642,82 +929,134 @@ class EditorState {
             showPreview = tab.showPreview,
             draftPath = draftPath,
             diskMtime = mtime,
+            previewMode = tab.previewMode.name,
+            untitledIndex = if (tab.file == null && tab.untitledIndex > 0) tab.untitledIndex else null,
+            editedAt = if (needsDraft && tab.editedAt > 0L) tab.editedAt else null,
         )
     }
 
-    /** Synchronous convenience wrapper — reads every restored tab's file from disk on the calling thread. */
-    fun restoreFrom(
-        snapshot: SessionSnapshot,
-        readDraft: (String) -> String?,
-        onStatus: (String) -> Unit,
-    ) {
-        applyRestored(buildRestoredSession(snapshot, readDraft, onStatus))
-    }
-
     /**
-     * Applies an already-built [RestoredSession] (see [buildRestoredSession]) to this state.
-     * Touches only in-memory objects — no I/O — so it's cheap and safe to call from the UI thread
-     * even when [buildRestoredSession] itself ran on a background dispatcher.
+     * Seeds a freshly launched window from the previous session. Nothing is reopened: the app
+     * starts on the start screen, with no tabs and no folder. Buffers that were unsaved when the
+     * app closed become [unsavedDrafts]; the files and folder that were open join the recent lists.
+     * Font size, layout and sidebar width carry over as preferences.
+     *
+     * Cheap enough for the UI thread: no file is read, and [draftModified] (last-modified time of
+     * a draft side file, null when it is gone) is one stat per unsaved buffer.
      */
-    fun applyRestored(restored: RestoredSession) {
-        layout = restored.layout
-        fontSize = restored.fontSize
-        panes.clear()
-        panes.addAll(restored.panes)
-        val focusIdx = restored.focusedPaneIndex.coerceIn(0, panes.lastIndex)
-        focusedPaneId = panes[focusIdx].id
-        restored.statusMessage?.let { statusMessage = it }
+    fun applyStartup(snapshot: SessionSnapshot, draftModified: (String) -> Long?) {
+        fontSize = snapshot.fontSize.coerceIn(8, 48)
+        sidebarWidth = snapshot.sidebarWidth.coerceIn(160, 480).toFloat()
+        val savedLayout = PaneLayout.entries.firstOrNull { it.name == snapshot.layout } ?: PaneLayout.Single
+        while (panes.size < savedLayout.paneCount) panes += PaneState()
+        layout = savedLayout
+
+        val previousTabs = snapshot.panes.flatMap { it.tabs }
+
+        // One entry per file (or per draft, for untitled buffers); the newer edit wins.
+        val drafts = LinkedHashMap<String, UnsavedDraft>()
+        fun keep(draft: UnsavedDraft) {
+            val key = draft.path ?: draft.draftPath
+            val existing = drafts[key]
+            if (existing == null || existing.editedAt < draft.editedAt) drafts[key] = draft
+        }
+        for (tab in previousTabs) {
+            val draftPath = tab.draftPath ?: continue
+            val modified = draftModified(draftPath) ?: continue
+            keep(
+                UnsavedDraft(
+                    draftPath = draftPath,
+                    path = tab.path,
+                    language = tab.language,
+                    cursor = tab.cursor,
+                    diskMtime = tab.diskMtime,
+                    untitledIndex = tab.untitledIndex ?: 0,
+                    editedAt = tab.editedAt ?: modified,
+                ),
+            )
+        }
+        for (saved in snapshot.unsaved) {
+            val modified = draftModified(saved.draftPath) ?: continue
+            keep(
+                UnsavedDraft(
+                    draftPath = saved.draftPath,
+                    path = saved.path,
+                    language = saved.language,
+                    cursor = saved.cursor,
+                    diskMtime = saved.diskMtime,
+                    untitledIndex = saved.untitledIndex ?: 0,
+                    editedAt = if (saved.editedAt > 0L) saved.editedAt else modified,
+                ),
+            )
+        }
+        unsavedDrafts.clear()
+        unsavedDrafts.addAll(drafts.values.sortedByDescending { it.editedAt })
+        // New "Untitled N" tabs must not reuse a number an unsaved buffer still shows.
+        TabState.resetUntitledCounter((unsavedDrafts.maxOfOrNull { it.untitledIndex } ?: 0) + 1)
+
+        // Sessions written before the recent lists existed still say which files and folder were open.
+        val files = LinkedHashSet<String>(snapshot.recentFiles)
+        previousTabs.mapNotNullTo(files) { it.path }
+        recentFiles.clear()
+        recentFiles.addAll(files.take(MAX_RECENT))
+
+        val folders = LinkedHashSet<String>(snapshot.recentFolders)
+        snapshot.projectRoot?.let { folders += it }
+        recentFolders.clear()
+        recentFolders.addAll(folders.take(MAX_RECENT))
     }
 }
 
-/** Result of restoring a [SessionSnapshot] into fresh, unattached [PaneState]s — see [buildRestoredSession]. */
-data class RestoredSession(
-    val layout: PaneLayout,
-    val fontSize: Int,
-    val panes: List<PaneState>,
-    val focusedPaneIndex: Int,
-    val statusMessage: String?,
-)
-
 /**
- * Builds a [RestoredSession] from a [SessionSnapshot] — the I/O-heavy part of session restore.
- * For every restored tab this reads its draft side-file (via [readDraft]) and, for tabs backed by
- * a file, the file itself (`File.readText()`) to detect external changes and re-highlight it. For
- * a session with several tabs — or a couple of large files — that's real disk I/O.
- *
- * This function touches no Compose state: it only builds plain [PaneState]/[TabState] objects that
- * aren't attached to any [EditorState] yet, so it's safe to run on a background dispatcher (e.g.
- * `Dispatchers.IO`). Callers on a UI thread should do exactly that, then hand the result to
- * [EditorState.applyRestored] — which is cheap — back on the UI thread.
+ * An unsaved buffer kept from an earlier session. The start screen lists it until it is restored
+ * into a tab or discarded; its text stays in the draft side file at [draftPath] until then.
  */
-fun buildRestoredSession(
-    snapshot: SessionSnapshot,
-    readDraft: (String) -> String?,
-    onStatus: (String) -> Unit = {},
-): RestoredSession {
-    val layout = PaneLayout.entries.firstOrNull { it.name == snapshot.layout } ?: PaneLayout.Single
-    val fontSize = snapshot.fontSize.coerceIn(8, 48)
-
-    var lastStatus: String? = null
-    val trackStatus: (String) -> Unit = { msg -> lastStatus = msg; onStatus(msg) }
-
-    val panes = mutableListOf<PaneState>()
-    for (paneSnap in snapshot.panes) {
-        val pane = PaneState()
-        for (tabSnap in paneSnap.tabs) {
-            pane.tabs += restoreTab(tabSnap, fontSize, readDraft, trackStatus)
+data class UnsavedDraft(
+    val draftPath: String,
+    /** Absolute path of the file the buffer belongs to; null for an untitled buffer. */
+    val path: String?,
+    val language: String,
+    val cursor: Int,
+    val diskMtime: Long?,
+    val untitledIndex: Int,
+    /** Epoch millis of the last edit. */
+    val editedAt: Long,
+) {
+    /** Same rule as [TabState.title]: the file name or "Untitled N", never the content. */
+    val title: String
+        get() = when {
+            path != null -> File(path).name
+            untitledIndex > 0 -> "Untitled $untitledIndex"
+            else -> "Untitled"
         }
-        pane.selectedIndex = if (pane.tabs.isEmpty()) 0
-            else paneSnap.selectedIndex.coerceIn(0, pane.tabs.lastIndex)
-        panes += pane
-    }
-    if (panes.isEmpty()) {
-        panes += PaneState().also { it.newTab() }
-    } else if (panes.all { it.tabs.isEmpty() }) {
-        panes[0].newTab()
-    }
-    val focusedPaneIndex = snapshot.focusedPaneIndex.coerceIn(0, panes.lastIndex)
-    return RestoredSession(layout, fontSize, panes, focusedPaneIndex, lastStatus)
+
+    fun toSnapshot() = UnsavedSnapshot(
+        draftPath = draftPath,
+        path = path,
+        language = language,
+        cursor = cursor,
+        diskMtime = diskMtime,
+        untitledIndex = untitledIndex.takeIf { it > 0 },
+        editedAt = editedAt,
+    )
+
+    /** For [restoreTab]. [diskMtime] is left out on purpose so a file changed on disk does not drop the draft. */
+    fun toTabSnapshot() = TabSnapshot(
+        path = path,
+        language = language,
+        cursor = cursor,
+        draftPath = draftPath,
+        diskMtime = null,
+        untitledIndex = untitledIndex.takeIf { it > 0 },
+    )
+}
+
+/** Applies the per-tab snapshot fields that every [restoreTab] branch shares. */
+private fun applySnapshotExtras(tab: TabState, snap: TabSnapshot) {
+    tab.previewMode = PreviewMode.entries.firstOrNull { it.name == snap.previewMode }
+        ?: if (snap.showPreview) PreviewMode.Split else PreviewMode.Edit
+    val savedIndex = snap.untitledIndex
+    if (tab.file == null && savedIndex != null && savedIndex > 0) tab.untitledIndex = savedIndex
 }
 
 private fun restoreTab(
@@ -733,7 +1072,7 @@ private fun restoreTab(
     if (path == null) {
         val tab = TabState(initialFile = null, initialText = "")
         tab.language = language
-        tab.showPreview = snap.showPreview
+        applySnapshotExtras(tab, snap)
         if (!draftText.isNullOrEmpty()) {
             val cursor = snap.cursor.coerceIn(0, draftText.length)
             tab.textField = TextFieldValue(draftText, selection = TextRange(cursor))
@@ -745,7 +1084,7 @@ private fun restoreTab(
     if (!file.isFile) {
         val tab = TabState(initialFile = null, initialText = "")
         tab.language = language
-        tab.showPreview = snap.showPreview
+        applySnapshotExtras(tab, snap)
         if (!draftText.isNullOrEmpty()) {
             val cursor = snap.cursor.coerceIn(0, draftText.length)
             tab.textField = TextFieldValue(draftText, selection = TextRange(cursor))
@@ -761,7 +1100,7 @@ private fun restoreTab(
         LargeFileGuard.FileSizeClass.UNSUPPORTED -> {
             val tab = TabState(initialFile = null, initialText = "")
             tab.language = language
-            tab.showPreview = snap.showPreview
+            applySnapshotExtras(tab, snap)
             onStatus("${file.name} is too large to reopen automatically — use File > Open to load it")
             return tab
         }
@@ -769,7 +1108,7 @@ private fun restoreTab(
             val tab = TabState(initialFile = file)
             tab.loadLargeFrom(file)
             tab.language = language
-            tab.showPreview = snap.showPreview
+            applySnapshotExtras(tab, snap)
             // Large-file tabs don't carry a draft or a restorable cursor position (see
             // tabToSnapshot) — the caret simply starts at the top of the file.
             return tab
@@ -782,7 +1121,7 @@ private fun restoreTab(
     if (diskText == null) {
         val tab = TabState(initialFile = null, initialText = "")
         tab.language = language
-        tab.showPreview = snap.showPreview
+        applySnapshotExtras(tab, snap)
         if (!draftText.isNullOrEmpty()) {
             val cursor = snap.cursor.coerceIn(0, draftText.length)
             tab.textField = TextFieldValue(draftText, selection = TextRange(cursor))
@@ -794,7 +1133,7 @@ private fun restoreTab(
     val tab = TabState(initialFile = file)
     tab.loadFrom(file)
     tab.language = language
-    tab.showPreview = snap.showPreview
+    applySnapshotExtras(tab, snap)
 
     if (draftText == null) {
         val cursor = snap.cursor.coerceIn(0, diskText.length)

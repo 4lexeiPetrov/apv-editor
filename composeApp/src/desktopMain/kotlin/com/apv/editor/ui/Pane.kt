@@ -42,6 +42,7 @@ import com.apv.editor.*
 import com.apv.editor.state.EditorState
 import com.apv.editor.state.PaneLayout
 import com.apv.editor.state.PaneState
+import com.apv.editor.state.PreviewMode
 import com.apv.editor.syntax.SyntaxLanguage
 import kotlinx.coroutines.flow.debounce
 import org.jetbrains.compose.resources.stringResource
@@ -52,7 +53,13 @@ import java.io.File
 internal fun PaneLayoutRenderer(
     state: EditorState,
     onOpenInPane: (PaneState) -> Unit,
+    onOpenFolder: () -> Unit = {},
 ) {
+    // With no tab anywhere there is nothing to split: one pane shows the start screen full width.
+    if (state.hasNoTabs) {
+        Pane(state.panes[0], state, onOpenInPane, Modifier.fillMaxSize(), onOpenFolder)
+        return
+    }
     when (state.layout) {
         PaneLayout.Single -> Pane(state.panes[0], state, onOpenInPane, Modifier.fillMaxSize())
         PaneLayout.Columns2 -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -168,6 +175,7 @@ private fun Pane(
     state: EditorState,
     onOpenInPane: (PaneState) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenFolder: () -> Unit = {},
 ) {
     var isDragOver by remember(pane.id) { mutableStateOf(false) }
 
@@ -193,9 +201,13 @@ private fun Pane(
                 return runCatching {
                     val files = t.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
                         ?: return@runCatching false
-                    val opened = files.filterIsInstance<File>().filter { it.isFile }
-                    if (opened.isEmpty()) return@runCatching false
+                    val dropped = files.filterIsInstance<File>()
+                    val opened = dropped.filter { it.isFile }
+                    // A dropped folder becomes the project folder (the first one, if several).
+                    val folder = dropped.firstOrNull { it.isDirectory }
+                    if (opened.isEmpty() && folder == null) return@runCatching false
                     state.focusedPaneId = pane.id
+                    folder?.let { state.openProject(it) }
                     opened.forEach { state.openFile(pane, it) }
                     true
                 }.getOrDefault(false)
@@ -217,6 +229,10 @@ private fun Pane(
             ),
     ) {
         PaneTabBar(pane, state)
+        val findTab = pane.currentTab
+        if (findTab != null && findTab.findOpen && !findTab.isLargeFile) {
+            FindBar(findTab, state)
+        }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val tab = pane.currentTab
             if (tab != null) {
@@ -224,15 +240,18 @@ private fun Pane(
                     LargeEditorPane(tab, pane, state)
                 } else if (tab.language == SyntaxLanguage.MARKDOWN && tab.showPreview) {
                     Row(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                            EditorPane(tab, pane, state)
+                        // PreviewMode.Preview drops the source side and lets the rendered pane fill the row.
+                        if (tab.previewMode == PreviewMode.Split) {
+                            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                                EditorPane(tab, pane, state)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .fillMaxHeight()
+                                    .background(EditorTheme.Border),
+                            )
                         }
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .background(EditorTheme.Border),
-                        )
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             // Reparsing the whole Markdown AST on every keystroke stalls typing on
                             // longer docs. The editor pane above still updates instantly; only the
@@ -250,6 +269,15 @@ private fun Pane(
                 } else {
                     EditorPane(tab, pane, state)
                 }
+            } else if (state.hasNoTabs) {
+                StartScreen(
+                    state = state,
+                    onOpenFiles = {
+                        state.focusedPaneId = pane.id
+                        onOpenInPane(pane)
+                    },
+                    onOpenFolder = onOpenFolder,
+                )
             } else {
                 EmptyPanePlaceholder(pane, state, onOpenInPane)
             }
@@ -289,6 +317,23 @@ private fun EmptyPanePlaceholder(
             }) {
                 Text(stringResource(Res.string.pane_open_file), color = EditorTheme.Accent)
             }
+            Spacer(Modifier.height(16.dp))
+            ShortcutHint(stringResource(Res.string.hint_new_tab), Platform.shortcutLabel("N"))
+            ShortcutHint(stringResource(Res.string.hint_open_file), Platform.shortcutLabel("O"))
+            ShortcutHint(stringResource(Res.string.hint_find), Platform.shortcutLabel("F"))
+            ShortcutHint(stringResource(Res.string.hint_commands), Platform.shortcutLabel("P", shift = true))
         }
+    }
+}
+
+/** One "action ... shortcut" line of the empty-pane hints. */
+@Composable
+private fun ShortcutHint(label: String, shortcut: String) {
+    Row(
+        modifier = Modifier.width(220.dp).height(22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = EditorTheme.OnSurfaceMuted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text(shortcut, color = EditorTheme.GutterText, fontSize = 12.sp)
     }
 }

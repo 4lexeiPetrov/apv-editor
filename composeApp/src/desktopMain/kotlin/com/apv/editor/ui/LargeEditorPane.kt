@@ -3,12 +3,9 @@ package com.apv.editor.ui
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.gestures.rememberScrollableState
-import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -22,7 +19,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.text.BasicTextField
@@ -156,7 +152,7 @@ internal fun LargeEditorPane(tab: TabState, pane: PaneState, state: EditorState)
     val measurer = rememberTextMeasurer()
     val maxLineWidthPx = remember(tab.id) {
         // Seed from the document's actual content instead of starting at 0f, which otherwise left
-        // the horizontal scrollbar (and hScrollableState's own clamp) reporting a too-small max
+        // the horizontal scrollbar (and the wheel handler's own clamp) reporting a too-small max
         // until the file's genuinely longest line happened to scroll into view and get measured
         // for real — see the class doc for how each row's true width grows this value further
         // from here on. controller.maxKnownLineLength is itself a safe over-estimate (raw UTF-8
@@ -174,6 +170,7 @@ internal fun LargeEditorPane(tab: TabState, pane: PaneState, state: EditorState)
         }
         mutableStateOf(seedWidth)
     }
+    val caretReveal = remember(tab.id) { CaretRevealMemo() }
     val highlightCache = remember(tab.id, controller, tab.language) { HighlightStateCache(controller, tab.language) }
 
     LaunchedEffect(tab.id, controller) {
@@ -276,63 +273,74 @@ internal fun LargeEditorPane(tab: TabState, pane: PaneState, state: EditorState)
             val lineContentMinWidth = (maxWidth - gutterWidth - listHorizontalPadding).coerceAtLeast(0.dp)
             val viewportWidthPx = with(density) { lineContentMinWidth.toPx() }
 
-            // Every row's Modifier.scrollable below feeds gestures through this one handler, which
-            // is what actually keeps every visible line — however long or short — moving in
-            // lockstep; see the class doc for why this replaces a shared Compose ScrollState.
-            val hScrollableState = rememberScrollableState { delta ->
-                val maxScroll = (maxLineWidthPx.value - viewportWidthPx).coerceAtLeast(0f)
-                val new = (hScrollPx.value + delta).coerceIn(0f, maxScroll)
-                val consumed = new - hScrollPx.value
-                hScrollPx.value = new
-                consumed
-            }
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize().padding(start = 8.dp, top = 6.dp, end = 12.dp, bottom = 6.dp),
+            // The one wheel/trackpad handler for this pane (see WheelScroll.kt): a gesture moves
+            // either the list or the shared horizontal offset, never both, and no row has a
+            // scrollable of its own any more. Every visible line — however long or short — moves
+            // in lockstep because they all read the same hScrollPx; see the class doc for why
+            // that is a plain offset and not a shared Compose ScrollState.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .axisLockedWheelScroll(
+                        tab.id,
+                        listState,
+                        viewportWidthPx,
+                        scrollHorizontally = { delta ->
+                            val maxScroll = (maxLineWidthPx.value - viewportWidthPx).coerceAtLeast(0f)
+                            val new = (hScrollPx.value + delta).coerceIn(0f, maxScroll)
+                            val consumed = new - hScrollPx.value
+                            hScrollPx.value = new
+                            consumed
+                        },
+                        scrollVertically = { listState.dispatchRawDelta(it) },
+                    ),
             ) {
-                items(count = controller.lineCount) { index ->
-                    LargeDocumentLineRow(
-                        tab = tab,
-                        controller = controller,
-                        index = index,
-                        pane = pane,
-                        state = state,
-                        focusRequester = focusRequester,
-                        gutterWidth = gutterWidth,
-                        gutterStyle = gutterStyle,
-                        highlightCache = highlightCache,
-                        hScrollPx = hScrollPx,
-                        maxLineWidthPx = maxLineWidthPx,
-                        hScrollableState = hScrollableState,
-                        viewportWidthPx = viewportWidthPx,
-                        lineContentMinWidth = lineContentMinWidth,
-                        listState = listState,
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(start = 8.dp, top = 6.dp, end = 12.dp, bottom = 6.dp),
+                ) {
+                    items(count = controller.lineCount) { index ->
+                        LargeDocumentLineRow(
+                            tab = tab,
+                            controller = controller,
+                            index = index,
+                            pane = pane,
+                            state = state,
+                            focusRequester = focusRequester,
+                            gutterWidth = gutterWidth,
+                            gutterStyle = gutterStyle,
+                            highlightCache = highlightCache,
+                            hScrollPx = hScrollPx,
+                            maxLineWidthPx = maxLineWidthPx,
+                            viewportWidthPx = viewportWidthPx,
+                            lineContentMinWidth = lineContentMinWidth,
+                            caretReveal = caretReveal,
+                        )
+                    }
                 }
+
+                LargeHorizontalScrollbar(
+                    hScrollPx = hScrollPx,
+                    maxLineWidthPx = maxLineWidthPx,
+                    viewportWidthPx = viewportWidthPx,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(start = gutterWidth + 8.dp, end = 12.dp),
+                )
+
+                // Unlike the horizontal scrollbar above, listState's own extent/position is exactly
+                // what a standard ScrollbarAdapter wants (one LazyColumn, no per-row measurement
+                // quirks) — no hand-rolled equivalent needed here.
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(listState),
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(bottom = 14.dp),
+                    style = editorScrollbarStyle(),
+                )
             }
-
-            LargeHorizontalScrollbar(
-                hScrollPx = hScrollPx,
-                maxLineWidthPx = maxLineWidthPx,
-                viewportWidthPx = viewportWidthPx,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .padding(start = gutterWidth + 8.dp, end = 12.dp),
-            )
-
-            // Unlike the horizontal scrollbar above, listState's own extent/position is exactly
-            // what a standard ScrollbarAdapter wants (one LazyColumn, no per-row measurement
-            // quirks) — no hand-rolled equivalent needed here.
-            VerticalScrollbar(
-                adapter = rememberScrollbarAdapter(listState),
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .padding(bottom = 14.dp),
-                style = editorScrollbarStyle(),
-            )
         }
     }
 }
@@ -351,44 +359,38 @@ private fun LargeDocumentLineRow(
     highlightCache: HighlightStateCache,
     hScrollPx: MutableState<Float>,
     maxLineWidthPx: MutableState<Float>,
-    hScrollableState: ScrollableState,
     viewportWidthPx: Float,
     lineContentMinWidth: Dp,
-    listState: LazyListState,
+    caretReveal: CaretRevealMemo,
 ) {
     val isActive = tab.largeCaret.line == index
     val content = remember(index, controller.revision) { controller.getLine(index) }
 
-    Row(modifier = Modifier.fillMaxWidth()) {
+    // The caret's row gets the same current-line treatment as the small-file editor: a tinted
+    // background and an accent-coloured line number.
+    val rowModifier = if (isActive) {
+        Modifier.fillMaxWidth().background(EditorTheme.SurfaceVariant)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Row(modifier = rowModifier) {
         Box(modifier = Modifier.width(gutterWidth).padding(end = 8.dp)) {
-            Text(text = (index + 1).toString(), style = gutterStyle, softWrap = false, modifier = Modifier.fillMaxWidth())
+            Text(
+                text = (index + 1).toString(),
+                style = if (isActive) gutterStyle.copy(color = EditorTheme.Accent) else gutterStyle,
+                softWrap = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
         Box(
             modifier = Modifier
                 .weight(1f)
-                // Bounds this row's content to exactly the row's own slot (matching the old
-                // fillMaxWidth) and hides whatever a long line's natural width pushes past it —
-                // Modifier.wrapContentWidth(unbounded = true) below lets that content measure
-                // wider than this Box in the first place, so nothing here does that clipping for
-                // free the way Modifier.horizontalScroll used to.
-                .clipToBounds()
-                .scrollable(
-                    state = hScrollableState,
-                    orientation = Orientation.Horizontal,
-                    // Without this, a trackpad/wheel swipe scrolled the line the opposite way from
-                    // every other scroll surface in the app (LineGutter/EditorPane's verticalScroll,
-                    // the LazyColumn below, LargeHorizontalScrollbar's own drag handle) — see the
-                    // class doc's note on hScrollPx and the `-hScrollPx` offset this feeds.
-                    reverseDirection = true,
-                    // Modifier.scrollable has no axis-locking of its own: a trackpad swipe that's
-                    // meant to be purely vertical almost always carries a little incidental x-jitter,
-                    // and without this guard every row's horizontal scrollable would happily consume
-                    // that jitter, dragging the content sideways while the user scrolls down. Gating
-                    // on the LazyColumn's own in-progress flag disables horizontal capture for the
-                    // duration of an active vertical scroll gesture, so only a deliberate horizontal
-                    // swipe (started while the list is at rest) moves hScrollPx.
-                    enabled = !listState.isScrollInProgress,
-                ),
+                // Bounds this row's content to exactly the row's own slot and hides whatever a
+                // long line's natural width pushes past it — Modifier.wrapContentWidth(unbounded =
+                // true) below lets that content measure wider than this Box in the first place.
+                // Horizontal scrolling itself is handled once for the whole pane (see
+                // LargeEditorPane's axisLockedWheelScroll), not per row.
+                .clipToBounds(),
         ) {
             if (isActive) {
                 ActiveLineField(
@@ -402,6 +404,7 @@ private fun LargeDocumentLineRow(
                     maxLineWidthPx = maxLineWidthPx,
                     viewportWidthPx = viewportWidthPx,
                     lineContentMinWidth = lineContentMinWidth,
+                    caretReveal = caretReveal,
                 )
             } else {
                 PassiveLine(
@@ -434,6 +437,7 @@ private fun ActiveLineField(
     maxLineWidthPx: MutableState<Float>,
     viewportWidthPx: Float,
     lineContentMinWidth: Dp,
+    caretReveal: CaretRevealMemo,
 ) {
     var fieldValue by remember(index, controller.revision) {
         val anchor = tab.largeSelectionAnchor
@@ -463,8 +467,16 @@ private fun ActiveLineField(
     // here via a vertical move from another line. A plain BasicTextField wrapped in
     // Modifier.horizontalScroll gets this for free; our per-row scroll is driven by hand (see the
     // class doc), so nothing does it unless this does.
+    //
+    // Only when the caret actually moved, though: this effect also restarts when the line gets a
+    // fresh layout, which happens every time the caret's row scrolls out of the list and back in.
+    // Without the caretReveal check that alone pulled the horizontal position back to the caret —
+    // scroll right, scroll down past the caret's line and back, and the view jumped left.
     LaunchedEffect(fieldValue.selection, layoutResult) {
         val lr = layoutResult ?: return@LaunchedEffect
+        val caret = LineCol(index, fieldValue.selection.end)
+        if (caretReveal.last == caret) return@LaunchedEffect
+        caretReveal.last = caret
         val textLen = lr.layoutInput.text.length
         val caretIndex = fieldValue.selection.end.coerceIn(0, textLen)
         val caretX = lr.getHorizontalPosition(caretIndex, true)
@@ -542,6 +554,11 @@ private fun ActiveLineField(
                 handleLargeLineKeyEvent(event, tab, controller, index, fieldValue, clipboard)
             },
     )
+}
+
+/** The caret position [ActiveLineField] last scrolled into view horizontally; see the effect there. */
+private class CaretRevealMemo {
+    var last: LineCol? = null
 }
 
 private fun orderedSelection(a: LineCol, b: LineCol): Pair<LineCol, LineCol> =
